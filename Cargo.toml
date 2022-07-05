@@ -1,0 +1,17 @@
+[package]
+name = "librats-rs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0"
+log = "0.4.14"
+tokio = { version = "1.0", features = ["full"] }
+strum = "0.24.0"
+strum_macros = "0.24.0"
+
+[build-dependencies]
+bindgen = "0.53.1"
+shadow-rs = "0.5.25"
