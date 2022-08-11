@@ -8,6 +8,8 @@
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
 use anyhow::{anyhow, Result};
+use serde_json::{json, Value};
+use std::ffi::CStr;
 use std::slice;
 
 #[macro_use]
@@ -113,7 +115,7 @@ pub enum TeeType {
 ///     assert!(result.is_ok());
 /// }
 /// ```
-pub async fn verify_quote(quote: &[u8], report_data: &[u8], tee: TeeType) -> Result<String> {
+pub async fn verify_quote(quote: &[u8], report_data: &[u8], tee: TeeType) -> Result<Value> {
     let mut evidence: attestation_evidence_t = Default::default();
 
     evidence.type_[..tee.to_string().len()].copy_from_slice(unsafe {
@@ -127,14 +129,55 @@ pub async fn verify_quote(quote: &[u8], report_data: &[u8], tee: TeeType) -> Res
 
     debug!("report data: {:?}, tee type: {:?}", report_data, tee);
 
-    let err = tokio::task::block_in_place(|| unsafe {
-        librats_verify_evidence(&mut evidence, report_data.as_ptr())
-    });
+    let mut claim_length = 0;
+    let claim: claim_t = Default::default();
+    let mut claims = Box::into_raw(Box::new(claim)) as *mut claim_t;
+    let mut claims_map = serde_json::Map::new();
 
-    if err == rats_verifier_err_t_RATS_VERIFIER_ERR_NONE {
-        Ok(String::from(""))
+    let err = tokio::task::block_in_place(|| unsafe {
+        librats_verify_evidence(
+            &mut evidence,
+            report_data.as_ptr(),
+            &mut claims,
+            &mut claim_length,
+        )
+    });
+    if err != rats_verifier_err_t_RATS_VERIFIER_ERR_NONE {
+        return Err(anyhow!("verify quote and parse claims error: {:?}", err));
+    }
+
+    // Construct parsed claims map
+    for i in 0..claim_length {
+        let claim_ptr = unsafe { claims.offset(i.try_into().unwrap()) };
+
+        // Convert std::os::raw::c_char to string
+        let key = unsafe { CStr::from_ptr((*claim_ptr).name) }
+            .to_str()
+            .map(|s| s.to_owned())
+            .unwrap();
+
+        // Convert *mut u8 to string
+        let vaule_ptr = unsafe { (*claim_ptr).value };
+        let value_size = unsafe { (*claim_ptr).value_size }.try_into().unwrap();
+
+        let value_byte = unsafe { slice::from_raw_parts(vaule_ptr, value_size) };
+        let value = hex::encode(value_byte);
+
+        debug!(
+            "key: {:?}, value: {:?}, value_size: {:?}",
+            key, value, value_size
+        );
+
+        claims_map.insert(key, json!(value));
+    }
+
+    // Free the Claims memory
+    let err = tokio::task::block_in_place(|| unsafe { free_claims_list(claims, claim_length) });
+
+    if err == rats_err_t_RATS_ERR_NONE {
+        Ok(Value::Object(claims_map))
     } else {
-        Err(anyhow!("verify quote error: {:?}", err))
+        Err(anyhow!("clean up claims memory err: {:?}", err))
     }
 }
 
@@ -196,11 +239,13 @@ mod tests {
         assert!(sgx_ret.is_ok() && !sgx_ret.is_err());
     }
 
-    // #[tokio::test(flavor = "multi_thread")]
-    // async fn test_verify_tdx_quote() {
-    //     let tdx_evidence = include_bytes!("tests/tdx_report.bin").to_vec();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_verify_tdx_quote() {
+        let tdx_evidence = include_bytes!("tests/tdx_report.bin").to_vec();
 
-    //     let tdx_ret = verify_quote(&tdx_evidence, report_data, TeeType::TDX).await;
-    //     assert!(tdx_ret.is_ok() && !tdx_ret.is_err());
-    // }
+        let tdx_ret = verify_quote(&tdx_evidence, report_data, TeeType::TDX).await;
+
+        println!("claims: {:#?}", tdx_ret);
+        assert!(tdx_ret.is_ok() && !tdx_ret.is_err());
+    }
 }

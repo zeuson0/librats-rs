@@ -11,6 +11,9 @@ log = "0.4.14"
 tokio = { version = "1.0", features = ["full"] }
 strum = "0.24.0"
 strum_macros = "0.24.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "*"
+hex = "0.4"
 
 [build-dependencies]
 bindgen = "0.53.1"
